@@ -1,125 +1,31 @@
-import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 import numpy as np
-import theano
-from theano import tensor as T
 from scipy import misc
 from random import sample, shuffle, randint
 import time
+import os
+import argparse
+parser = argparse.ArgumentParser(description='Train a Cycle GAN.')
+parser.add_argument('path', type=str, help='Path to a dataset folder. The folder must contain trainA, trainB, testA and testB subfolders.')
+parser.add_argument('--out_size', default=128, type=int, help='Image size to be output.')
+parser.add_argument('--bs', type=int, default=1, help='Batchsize.')
+parser.add_argument('--n_epochs', type=int, default=200, help='Number of epochs.')
+parser.add_argument('--lr', type=float, default=2e-4, help='Learning rate.')
+parser.add_argument('--lambd', type=float, default=10., help='Lambda value for cycle loss.')
+parser.add_argument('--use_sigmoid', type=int, default=False, help='Use sigmoid for output activation.')
+parser.add_argument('--gpu', type=str, default='0', help='Which GPU to use.')
+
+args = parser.parse_args()
+os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+import theano
+from theano import tensor as T
 
 import neuralnet as nn
 
 
-def reflect_pad(x, width, batch_ndim=1):
-    """
-    Pad a tensor with a constant value.
-    Parameters
-    ----------
-    x : tensor
-    width : int, iterable of int, or iterable of tuple
-        Padding width. If an int, pads each axis symmetrically with the same
-        amount in the beginning and end. If an iterable of int, defines the
-        symmetric padding width separately for each axis. If an iterable of
-        tuples of two ints, defines a seperate padding width for each beginning
-        and end of each axis.
-    batch_ndim : integer
-        Dimensions before the value will not be padded.
-    """
-
-    # Idea for how to make this happen: Flip the tensor horizontally to grab horizontal values, then vertically to grab vertical values
-    # alternatively, just slice correctly
-    input_shape = x.shape
-    input_ndim = x.ndim
-
-    output_shape = list(input_shape)
-    indices = [slice(None) for _ in output_shape]
-
-    if isinstance(width, int):
-        widths = [width] * (input_ndim - batch_ndim)
-    else:
-        widths = width
-
-    for k, w in enumerate(widths):
-        try:
-            l, r = w
-        except TypeError:
-            l = r = w
-        output_shape[k + batch_ndim] += l + r
-        indices[k + batch_ndim] = slice(l, l + input_shape[k + batch_ndim])
-
-    # Create output array
-    out = T.zeros(output_shape)
-
-    # Vertical Reflections
-    out = T.set_subtensor(out[:, :, :width, width:-width],
-                          x[:, :, width:0:-1, :])  # out[:,:,:width,width:-width] = x[:,:,width:0:-1,:]
-    out = T.set_subtensor(out[:, :, -width:, width:-width],
-                          x[:, :, -2:-(2 + width):-1, :])  # out[:,:,-width:,width:-width] = x[:,:,-2:-(2+width):-1,:]
-
-    # Place X in out
-    # out = T.set_subtensor(out[tuple(indices)], x) # or, alternative, out[width:-width,width:-width] = x
-    out = T.set_subtensor(out[:, :, width:-width, width:-width], x)  # out[:,:,width:-width,width:-width] = x
-
-    # Horizontal reflections
-    out = T.set_subtensor(out[:, :, :, :width],
-                          out[:, :, :, (2 * width):width:-1])  # out[:,:,:,:width] = out[:,:,:,(2*width):width:-1]
-    out = T.set_subtensor(out[:, :, :, -width:], out[:, :, :, -(width + 2):-(
-                2 * width + 2):-1])  # out[:,:,:,-width:] = out[:,:,:,-(width+2):-(2*width+2):-1]
-    return out
-
-
-class ReflectLayer(nn.Layer):
-
-    def __init__(self, input_shape, width, batch_ndim=2, layer_name='ReflectLayer'):
-        super(ReflectLayer, self).__init__(input_shape, layer_name)
-        self.width = width
-        self.batch_ndim = batch_ndim
-
-    @property
-    def output_shape(self):
-        output_shape = list(self.input_shape)
-
-        if isinstance(self.width, int):
-            widths = [self.width] * (len(self.input_shape) - self.batch_ndim)
-        else:
-            widths = self.width
-
-        for k, w in enumerate(widths):
-            if output_shape[k + self.batch_ndim] is None:
-                continue
-            else:
-                try:
-                    l, r = w
-                except TypeError:
-                    l = r = w
-                output_shape[k + self.batch_ndim] += l + r
-        return tuple(output_shape)
-
-    def get_output(self, input):
-        return reflect_pad(input, self.width, self.batch_ndim)
-
-
-def ReflectPaddingConv(input_shape, num_filters, filter_size=3, stride=1, activation='relu', use_batchnorm=True,
-                       layer_name='ReflectPaddingConv', **kwargs):
-    assert filter_size % 2 == 1
-    pad_size = filter_size >> 1
-    block = nn.Sequential(input_shape=input_shape, layer_name=layer_name)
-    block.append(ReflectLayer(block.output_shape, pad_size, layer_name=layer_name+'/Reflect'))
-    if use_batchnorm:
-        block.append(
-            nn.ConvNormAct(block.output_shape, num_filters, filter_size, nn.Normal(.02), border_mode=0, stride=stride,
-                           activation=activation, layer_name=layer_name + '/conv_bn_act', normalization='gn',
-                           groups=num_filters))
-    else:
-        block.append(nn.ConvolutionalLayer(block.output_shape, num_filters, filter_size, nn.Normal(.02), border_mode=0,
-                                           stride=stride, activation=activation, layer_name=layer_name+'/conv'))
-    return block
-
-
 def resblock(input_shape, num_filters, block_name, **kwargs):
     block = nn.Sequential(input_shape=input_shape, layer_name=block_name)
-    block.append(ReflectPaddingConv(input_shape, num_filters, layer_name=block_name + '/conv1'))
-    block.append(ReflectPaddingConv(input_shape, num_filters, activation='linear', layer_name=block_name + '/conv2'))
+    block.append(nn.ReflectPaddingConv(input_shape, num_filters, layer_name=block_name + '/conv1'))
+    block.append(nn.ReflectPaddingConv(input_shape, num_filters, activation='linear', layer_name=block_name + '/conv2'))
     return block
 
 
@@ -127,7 +33,7 @@ class ResNetGenerator(nn.Sequential):
     def __init__(self, input_shape, num_filters=64, name='ResNetGen'):
         super(ResNetGenerator, self).__init__(input_shape=input_shape, layer_name=name)
 
-        self.append(ReflectPaddingConv(input_shape, num_filters, 7, layer_name=name + '/first'))
+        self.append(nn.ReflectPaddingConv(input_shape, num_filters, 7, layer_name=name + '/first'))
         for m in (2, 4):
             self.append(
                 nn.ConvNormAct(self.output_shape, num_filters * m, 4, stride=2, border_mode=1, init=nn.Normal(.02),
@@ -145,7 +51,7 @@ class ResNetGenerator(nn.Sequential):
                                           activation='relu'))
 
         self.append(
-            ReflectPaddingConv(self.output_shape, 3, 7, activation='tanh', use_batchnorm=False, layer_name=name + '/output'))
+            nn.ReflectPaddingConv(self.output_shape, 3, 7, activation='tanh', use_batchnorm=False, layer_name=name + '/output'))
 
 
 class Discriminator(nn.Sequential):
@@ -218,11 +124,11 @@ class DataManager(nn.DataManager):
         return input / 2. + .5
 
 
-def train(image_shape, path, bs=1, lambd=10., lr=2e-4, beta1=.5, n_epochs=200):
+def train(image_shape, path, bs=args.bs, lambd=args.lambd, beta1=.5, n_epochs=args.n_epochs):
     gen_x2y = ResNetGenerator((None,)+image_shape, name='Generator_X2Y')
     gen_y2x = ResNetGenerator((None,)+image_shape, name='Generator_Y2X')
-    dis_x = Discriminator((None,)+image_shape, 64, name='DiscriminatorX', use_sigmoid=False)
-    dis_y = Discriminator((None,)+image_shape, 64, name='DiscriminatorY', use_sigmoid=False)
+    dis_x = Discriminator((None,)+image_shape, 64, name='DiscriminatorX', use_sigmoid=args.use_sigmoid)
+    dis_y = Discriminator((None,)+image_shape, 64, name='DiscriminatorY', use_sigmoid=args.use_sigmoid)
 
     X = T.tensor4('inputX')
     Y = T.tensor4('inputY')
@@ -230,7 +136,7 @@ def train(image_shape, path, bs=1, lambd=10., lr=2e-4, beta1=.5, n_epochs=200):
     Y_fake_t = T.tensor4('inputY_fake')
     X_ = theano.shared(np.zeros((bs,)+image_shape, 'float32'), 'inputX placeholder')
     Y_ = theano.shared(np.zeros((bs,)+image_shape, 'float32'), 'inputY placeholder')
-    lr_ = theano.shared(np.float32(lr), 'learning rate')
+    lr_ = theano.shared(np.float32(args.lr), 'learning rate')
 
     nn.set_training_status(True)
     Y_fake = gen_x2y(X)
@@ -245,10 +151,11 @@ def train(image_shape, path, bs=1, lambd=10., lr=2e-4, beta1=.5, n_epochs=200):
     X_from_Y_fake = gen_y2x(Y_fake)
     Y_from_X_fake = gen_x2y(X_fake)
 
-    dis_X_loss = T.mean((pred_X_real - 1.) ** 2.) + T.mean(pred_X_fake ** 2.)
-    dis_Y_loss = T.mean((pred_Y_real - 1.) ** 2.) + T.mean(pred_Y_fake ** 2.)
-    gen_X_loss = T.mean((dis_x(X_fake) - 1.) ** 2.)
-    gen_Y_loss = T.mean((dis_y(Y_fake) - 1.) ** 2.)
+    loss_fn = nn.binary_cross_entropy if args.use_sigmoid else lambda x, y: T.mean((x - y) ** 2.)
+    dis_X_loss = loss_fn(pred_X_real, T.ones_like(pred_X_real)) + loss_fn(pred_X_fake, T.zeros_like(pred_X_fake))
+    dis_Y_loss = loss_fn(pred_Y_real, T.ones_like(pred_Y_real)) + loss_fn(pred_Y_fake, T.zeros_like(pred_Y_fake))
+    gen_X_loss = loss_fn(dis_x(X_fake), T.ones_like(pred_Y_fake))
+    gen_Y_loss = loss_fn(dis_y(Y_fake), T.ones_like(pred_X_fake))
     cycle_loss = nn.norm_error(X_from_Y_fake, X, 1) + nn.norm_error(Y_from_X_fake, Y, 1)
 
     loss_gen = gen_X_loss + gen_Y_loss + cycle_loss * lambd
@@ -266,14 +173,14 @@ def train(image_shape, path, bs=1, lambd=10., lr=2e-4, beta1=.5, n_epochs=200):
 
     dm_train = DataManager(image_shape[-1], (X_, Y_), path, bs, n_epochs, True, 'train')
     dm_test = DataManager(image_shape[-1], (X_, Y_), path, bs, 1, False, 'test')
-    mon = nn.monitor.Monitor(model_name='CycleGAN', use_visdom=True, server='http://165.132.112.105')
+    mon = nn.monitor.Monitor(model_name='CycleGAN', use_visdom=True)
     batches = dm_train.get_batches()
     fakes = [[], []]
     epoch = 0
     print('Training...')
     start = time.time()
     for it in batches:
-        if it % dm_train.data_size:
+        if it % dm_train.data_size == 0:
             epoch += 1
             if epoch > (n_epochs >> 1):
                 nn.anneal_learning_rate(lr_, epoch - (n_epochs >> 1), 'linear', num_iters=n_epochs-(n_epochs >> 1))
@@ -312,7 +219,7 @@ def train(image_shape, path, bs=1, lambd=10., lr=2e-4, beta1=.5, n_epochs=200):
                     Y_reals.append(dm_train.unnormalize(Y_.get_value()))
                 X_fakes.append(generate_X() / 2. + .5)
                 Y_fakes.append(generate_Y() / 2. + .5)
-            
+
             if it == 0:
                 mon.imwrite('X_real', np.concatenate(X_reals[:50]))
                 mon.imwrite('Y_real', np.concatenate(Y_reals[:50]))
@@ -332,4 +239,4 @@ def train(image_shape, path, bs=1, lambd=10., lr=2e-4, beta1=.5, n_epochs=200):
 
 
 if '__main__' in __name__:
-    train((3, 128, 128), 'C:/Users/justanhduc/Downloads/pytorch-CycleGAN-and-pix2pix-master/datasets/ukiyoe2photo')
+    train((3, args.out_size, args.out_size), args.path)
