@@ -194,6 +194,8 @@ def train():
                             name='train discriminators')
 
     nn.set_training_status(False)
+    Y_fake = gen_x2y(X)
+    X_fake = gen_y2x(Y)
     generate_X = nn.function([], X_fake, givens={Y: Y_}, name='generate X from Y')
     generate_Y = nn.function([], Y_fake, givens={X: X_}, name='generate Y from X')
 
