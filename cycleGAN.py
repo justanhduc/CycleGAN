@@ -178,8 +178,8 @@ def train():
                  grad_pen_loss * grad_pen(pred_X_real, X) + grad_pen_loss * grad_pen(pred_X_fake, X_fake_t)
     dis_Y_loss = loss_fn(pred_Y_real, T.ones_like(pred_Y_real)) + loss_fn(pred_Y_fake, T.zeros_like(pred_Y_fake)) + \
                  grad_pen_loss * grad_pen(pred_Y_real, Y) + grad_pen_loss * grad_pen(pred_Y_fake, Y_fake_t)
-    gen_X_loss = loss_fn(dis_x(X_fake), T.ones_like(pred_Y_fake))
-    gen_Y_loss = loss_fn(dis_y(Y_fake), T.ones_like(pred_X_fake))
+    gen_X_loss = loss_fn(dis_x(X_fake), T.ones_like(dis_x(X_fake)))
+    gen_Y_loss = loss_fn(dis_y(Y_fake), T.ones_like(dis_y(Y_fake)))
     cycle_loss = nn.norm_error(X_from_Y_fake, X, 1) + nn.norm_error(Y_from_X_fake, Y, 1)
 
     loss_gen = gen_X_loss + gen_Y_loss + cycle_loss * lambd
