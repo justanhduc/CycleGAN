@@ -3,9 +3,9 @@ A Theano implementation of Cycle GAN
 
 ## Requirements
 
-[Theano]()
+[Theano](http://deeplearning.net/software/theano/)
 
-[Neuralnet]()
+[Neuralnet](https://github.com/justanhduc/neuralnet)
 
 ## Usage
 
@@ -15,7 +15,11 @@ python cycleGAN.py path-to-dataset (--out_size 128) (--bs 1) (--n_epochs 200) (-
 
 ## Results
 
-TO BE UPDATED.
+The following samples were produced after 210k iterations
+
+![monet2photo](https://github.com/justanhduc/CycleGAN/blob/master/samples/monet2photo.png)
+
+![photo2monet](https://github.com/justanhduc/CycleGAN/blob/master/samples/photo2monet.png)
 
 ## Credits
 
